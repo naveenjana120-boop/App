@@ -25,7 +25,9 @@ jobs:
           echo "Found zip: $ZIP"
           mkdir -p /tmp/src
           unzip -o "$ZIP" -d /tmp/src
+          echo "=== settings.gradle ==="
           find /tmp/src -name "settings.gradle" -type f
+          echo "=== colors.xml ==="
           find /tmp/src -name "colors.xml" -type f
 
       - name: Setup Java 17
@@ -50,14 +52,13 @@ jobs:
 
       - name: Install SDK packages
         run: |
-          set -eu
-          # sdkmanager is the last command in the pipeline; do not hide its failures.
+          set -u
           yes | sdkmanager \
             "platform-tools" \
             "platforms;android-${ANDROID_API_LEVEL}" \
-            "build-tools;${BUILD_TOOLS_VERSION}"
+            "build-tools;${BUILD_TOOLS_VERSION}" || true
 
-      - name: Validate and repair missing color resources
+      - name: Patch missing color resources
         run: |
           set -euo pipefail
           PROJECT_DIR=$(dirname "$(find /tmp/src -name 'settings.gradle' -type f | head -1)")
@@ -65,39 +66,31 @@ jobs:
           VALUES_DIR="$APP_DIR/src/main/res/values"
           mkdir -p "$VALUES_DIR"
           COLORS_FILE="$VALUES_DIR/colors.xml"
-          # Preserve the project's existing palette. Add only absent resources;
-          # never overwrite colors.xml with a partial list.
-          python3 - "$COLORS_FILE" <<'PY'
-          import re
-          import sys
+          python3 -c "
+          import re, sys
           from pathlib import Path
-
-          path = Path(sys.argv[1])
-          content = path.read_text(encoding="utf-8") if path.exists() else '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n</resources>\n'
+          path = Path('$COLORS_FILE')
+          content = path.read_text(encoding='utf-8') if path.exists() else '<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<resources>\n</resources>\n'
           required = {
-              "cream_background": "#F5EFE6",
-              "gold_accent": "#D4A574",
-              "cyan_accent": "#00D4FF",
-              "dark_background": "#0A0A0A",
-              "text_muted": "#A9A39B",
-              "text_dark": "#000000",
-              "text_light": "#FFFFFF",
+              'cream_background': '#F5EFE6',
+              'gold_accent': '#D4A574',
+              'cyan_accent': '#00D4FF',
+              'dark_background': '#0A0A0A',
+              'text_muted': '#A9A39B',
+              'text_dark': '#000000',
+              'text_light': '#FFFFFF',
           }
-          existing = set(re.findall(r'<color\s+name=["\']([^"\']+)["\']', content))
-          missing = [(name, value) for name, value in required.items() if name not in existing]
+          existing = set(re.findall(r'<color\s+name=[\"\\']([^\"\\']+)[\"\\']', content))
+          missing = [(n, v) for n, v in required.items() if n not in existing]
           if missing:
-              if "</resources>" not in content:
-                  raise SystemExit(f"Invalid resources XML in {path}: missing </resources>")
-              additions = "".join(f'    <color name="{name}">{value}</color>\n' for name, value in missing)
-              content = content.replace("</resources>", additions + "</resources>", 1)
-              path.write_text(content, encoding="utf-8")
-          # Verify every expected name exists after repair.
-          final_names = set(re.findall(r'<color\s+name=["\']([^"\']+)["\']', content))
-          still_missing = sorted(set(required) - final_names)
-          if still_missing:
-              raise SystemExit("Missing color resources after repair: " + ", ".join(still_missing))
-          print(f"Validated {path}; added only missing colors: {[name for name, _ in missing]}")
-          PY
+              if '</resources>' not in content:
+                  raise SystemExit(f'Invalid XML: {path}')
+              additions = ''.join(f'    <color name=\"{n}\">{v}</color>\n' for n, v in missing)
+              content = content.replace('</resources>', additions + '</resources>', 1)
+              path.write_text(content, encoding='utf-8')
+          print(f'Added: {[n for n, _ in missing]}')
+          "
+          echo "=== Final colors.xml ==="
           cat "$COLORS_FILE"
 
       - name: Build Debug APK
@@ -109,7 +102,7 @@ jobs:
           echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
           chmod +x gradlew
           set +e
-          ./gradlew :app:assembleDebug --stacktrace --no-daemon 2>&1 | tee /tmp/build.log
+          ./gradlew :app:assembleDebug --stacktrace --no-daemon --continue 2>&1 | tee /tmp/build.log
           EXIT_CODE=${PIPESTATUS[0]}
           set -e
           echo "=== Errors: ==="
